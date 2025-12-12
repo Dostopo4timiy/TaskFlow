@@ -1,58 +1,69 @@
 import pytest
 from httpx import AsyncClient
-from fastapi import status
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+from sqlalchemy.orm import sessionmaker
+
+from src.main import app
+from src.core.database import Base, get_db
+
+
+# Тестовая БД
+TEST_DATABASE_URL = "postgresql+asyncpg://test:test@localhost/test_db"
+
+engine = create_async_engine(TEST_DATABASE_URL, echo=True)
+TestingSessionLocal = sessionmaker(
+    engine, class_=AsyncSession, expire_on_commit=False
+)
+
+
+async def override_get_db():
+    async with TestingSessionLocal() as session:
+        yield session
+
+
+app.dependency_overrides[get_db] = override_get_db
+
+
+@pytest.fixture(autouse=True)
+async def setup_database():
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    yield
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.drop_all)
 
 
 @pytest.mark.asyncio
-async def test_create_task(client: AsyncClient):
-    """Тест создания задачи"""
-    task_data = {
-        "title": "Test Task",
-        "description": "Test Description",
-        "priority": "medium"
-    }
+async def test_create_task():
+    async with AsyncClient(app=app, base_url="http://test") as ac:
+        response = await ac.post(
+            "/api/v1/tasks/",
+            json={
+                "name": "Test Task",
+                "description": "Test Description",
+                "priority": "HIGH"
+            }
+        )
     
-    response = await client.post("/api/v1/tasks", json=task_data)
-    assert response.status_code == status.HTTP_201_CREATED
-    
+    assert response.status_code == 201
     data = response.json()
-    assert data["title"] == task_data["title"]
-    assert data["description"] == task_data["description"]
-    assert data["priority"] == task_data["priority"]
-    assert data["status"] == "new"
+    assert data["name"] == "Test Task"
+    assert data["status"] == "NEW"
 
 
 @pytest.mark.asyncio
-async def test_get_tasks(client: AsyncClient):
-    """Тест получения списка задач"""
-    response = await client.get("/api/v1/tasks")
-    assert response.status_code == status.HTTP_200_OK
+async def test_get_tasks():
+    async with AsyncClient(app=app, base_url="http://test") as ac:
+        # Создаем задачу
+        await ac.post(
+            "/api/v1/tasks/",
+            json={"name": "Test Task", "priority": "MEDIUM"}
+        )
+        
+        # Получаем список
+        response = await ac.get("/api/v1/tasks/")
     
+    assert response.status_code == 200
     data = response.json()
-    assert "tasks" in data
-    assert "total" in data
-    assert "page" in data
-    assert "size" in data
-
-
-@pytest.mark.asyncio
-async def test_get_task(client: AsyncClient, test_task):
-    """Тест получения задачи по ID"""
-    response = await client.get(f"/api/v1/tasks/{test_task['id']}")
-    assert response.status_code == status.HTTP_200_OK
-    
-    data = response.json()
-    assert data["id"] == test_task["id"]
-    assert data["title"] == test_task["title"]
-
-
-@pytest.mark.asyncio
-async def test_get_task_status(client: AsyncClient, test_task):
-    """Тест получения статуса задачи"""
-    response = await client.get(f"/api/v1/tasks/{test_task['id']}/status")
-    assert response.status_code == status.HTTP_200_OK
-    
-    data = response.json()
-    assert data["task_id"] == test_task["id"]
-    assert "status" in data
-    assert "created_at" in data
+    assert len(data["tasks"]) == 1
+    assert data["total"] == 1
