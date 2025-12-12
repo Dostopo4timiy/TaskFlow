@@ -1,58 +1,35 @@
 from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
+from alembic import command
+from alembic.config import Config
 
-from core.config import settings
-from core.database import engine, Base, init_db, close_db
-from api.v1.endpoints import router as api_router
-import logging
-
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
+from src.api.v1.endpoints import router as api_router
+from src.core.database import engine
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Lifespan events"""
-    # Startup
-    logger.info("Starting TaskFlow service...")
-    
-    # Initialize database
-    await init_db()
-    logger.info("Database initialized")
+    # Создаем таблицы при старте
+    async with engine.begin() as conn:
+        # Можно использовать Alembic, но для простоты создадим таблицы
+        from src.models.task import Base
+        await conn.run_sync(Base.metadata.create_all)
     
     yield
     
-    # Shutdown
-    logger.info("Shutting down TaskFlow service...")
-    await close_db()
-    logger.info("Database connections closed")
+    # Cleanup
+    await engine.dispose()
 
 
 app = FastAPI(
-    title=settings.PROJECT_NAME,
+    title="Task Management Service",
     description="Асинхронный сервис управления задачами",
     version="1.0.0",
-    openapi_url=f"{settings.API_V1_PREFIX}/openapi.json",
-    docs_url="/docs",
-    redoc_url="/redoc",
     lifespan=lifespan
 )
 
-# CORS middleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# Include routers
-app.include_router(api_router, prefix=settings.API_V1_PREFIX)
+app.include_router(api_router)
 
 
 @app.get("/health")
