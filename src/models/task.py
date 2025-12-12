@@ -1,59 +1,40 @@
-from sqlalchemy import Column, Integer, String, DateTime, Enum, Text, func
-from sqlalchemy.dialects.postgresql import ENUM as PGEnum
-from sqlalchemy.ext.declarative import declarative_base
-import enum
 from datetime import datetime
+from enum import Enum
+from sqlalchemy import Column, Integer, String, DateTime, Text, Enum as SQLEnum
+from sqlalchemy.dialects.postgresql import ENUM
+from sqlalchemy.sql import func
 
-Base = declarative_base()
-
-
-class TaskPriority(enum.Enum):
-    LOW = "low"
-    MEDIUM = "medium"
-    HIGH = "high"
+from src.core.database import Base
 
 
-class TaskStatus(enum.Enum):
-    NEW = "new"
-    PENDING = "pending"
-    IN_PROGRESS = "in_progress"
-    COMPLETED = "completed"
-    FAILED = "failed"
-    CANCELLED = "cancelled"
+class TaskStatus(str, Enum):
+    NEW = "NEW"
+    PENDING = "PENDING"
+    IN_PROGRESS = "IN_PROGRESS"
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"
+    CANCELLED = "CANCELLED"
+
+
+class TaskPriority(str, Enum):
+    LOW = "LOW"
+    MEDIUM = "MEDIUM"
+    HIGH = "HIGH"
 
 
 class Task(Base):
     __tablename__ = "tasks"
     
     id = Column(Integer, primary_key=True, index=True)
-    title = Column(String(255), nullable=False)
-    description = Column(Text, nullable=True)
-    priority = Column(
-        PGEnum(TaskPriority, name="task_priority_enum"),
-        nullable=False,
-        default=TaskPriority.MEDIUM
-    )
-    status = Column(
-        PGEnum(TaskStatus, name="task_status_enum"),
-        nullable=False,
-        default=TaskStatus.NEW
-    )
-    created_at = Column(DateTime, default=func.now(), nullable=False)
-    started_at = Column(DateTime, nullable=True)
-    completed_at = Column(DateTime, nullable=True)
+    name = Column(String(255), nullable=False)
+    description = Column(Text)
+    priority = Column(SQLEnum(TaskPriority), default=TaskPriority.MEDIUM)
+    status = Column(SQLEnum(TaskStatus), default=TaskStatus.NEW)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    started_at = Column(DateTime(timezone=True), nullable=True)
+    completed_at = Column(DateTime(timezone=True), nullable=True)
     result = Column(Text, nullable=True)
     error_info = Column(Text, nullable=True)
     
-    def to_dict(self):
-        return {
-            "id": self.id,
-            "title": self.title,
-            "description": self.description,
-            "priority": self.priority.value,
-            "status": self.status.value,
-            "created_at": self.created_at.isoformat() if self.created_at else None,
-            "started_at": self.started_at.isoformat() if self.started_at else None,
-            "completed_at": self.completed_at.isoformat() if self.completed_at else None,
-            "result": self.result,
-            "error_info": self.error_info
-        }
+    def __repr__(self):
+        return f"<Task(id={self.id}, name='{self.name}', status='{self.status}')>"
