@@ -1,28 +1,32 @@
-from pydantic import BaseModel, Field
 from datetime import datetime
-from typing import Optional, List
 from enum import Enum
+from typing import Optional
+from pydantic import BaseModel, Field
 
 
 class TaskPriority(str, Enum):
-    LOW = "low"
-    MEDIUM = "medium"
-    HIGH = "high"
+    LOW = "LOW"
+    MEDIUM = "MEDIUM"
+    HIGH = "HIGH"
 
 
 class TaskStatus(str, Enum):
-    NEW = "new"
-    PENDING = "pending"
-    IN_PROGRESS = "in_progress"
-    COMPLETED = "completed"
-    FAILED = "failed"
-    CANCELLED = "cancelled"
+    NEW = "NEW"
+    PENDING = "PENDING"
+    IN_PROGRESS = "IN_PROGRESS"
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"
+    CANCELLED = "CANCELLED"
 
 
-class TaskCreate(BaseModel):
-    title: str = Field(..., min_length=1, max_length=255)
+class TaskBase(BaseModel):
+    name: str = Field(..., min_length=1, max_length=255)
     description: Optional[str] = None
     priority: TaskPriority = TaskPriority.MEDIUM
+
+
+class TaskCreate(TaskBase):
+    pass
 
 
 class TaskUpdate(BaseModel):
@@ -31,11 +35,8 @@ class TaskUpdate(BaseModel):
     error_info: Optional[str] = None
 
 
-class TaskResponse(BaseModel):
+class TaskResponse(TaskBase):
     id: int
-    title: str
-    description: Optional[str]
-    priority: TaskPriority
     status: TaskStatus
     created_at: datetime
     started_at: Optional[datetime] = None
@@ -48,16 +49,7 @@ class TaskResponse(BaseModel):
 
 
 class TaskListResponse(BaseModel):
-    tasks: List[TaskResponse]
+    tasks: list[TaskResponse]
     total: int
     page: int
     size: int
-    pages: int
-
-
-class TaskStatusResponse(BaseModel):
-    task_id: int
-    status: TaskStatus
-    created_at: datetime
-    started_at: Optional[datetime] = None
-    completed_at: Optional[datetime] = None
