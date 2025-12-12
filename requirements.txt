@@ -1,11 +1,33 @@
+
+---
+
+### **requirements.txt**
+
+```txt
+# FastAPI & Web
 fastapi==0.104.1
 uvicorn[standard]==0.24.0
+python-multipart==0.0.6
+
+# Database
 sqlalchemy==2.0.23
-asyncpg==0.29.0
+asyncpg==0.29.1
 alembic==1.12.1
+
+# Message Queue
+aio-pika==9.4.1
+
+# Configuration & Validation
 pydantic==2.5.0
 pydantic-settings==2.1.0
-aio-pika==9.4.1
-python-jose[cryptography]==3.3.0
-passlib[bcrypt]==1.7.4
-python-multipart==0.0.6
+
+# Development & Testing
+pytest==7.4.3
+pytest-asyncio==0.21.1
+httpx==0.25.2
+
+# Optional: Redis для кэширования (если понадобится)
+# redis==5.0.1
+
+# Optional: Мониторинг
+# prometheus-client==0.19.0
