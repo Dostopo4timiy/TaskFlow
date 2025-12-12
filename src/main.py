@@ -3,11 +3,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 
 from core.config import settings
-from core.database import engine, Base
+from core.database import engine, Base, init_db, close_db
 from api.v1.endpoints import router as api_router
 import logging
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
 
@@ -15,17 +18,18 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     """Lifespan events"""
     # Startup
-    logger.info("Starting up...")
+    logger.info("Starting TaskFlow service...")
     
-    # Create database tables
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+    # Initialize database
+    await init_db()
+    logger.info("Database initialized")
     
     yield
     
     # Shutdown
-    logger.info("Shutting down...")
-    await engine.dispose()
+    logger.info("Shutting down TaskFlow service...")
+    await close_db()
+    logger.info("Database connections closed")
 
 
 app = FastAPI(
