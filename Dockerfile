@@ -2,31 +2,20 @@ FROM python:3.10-slim
 
 WORKDIR /app
 
-# Устанавливаем системные зависимости
-RUN apt-get update && apt-get install -y \
-    gcc \
-    postgresql-client \
-    && rm -rf /var/lib/apt/lists/*
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
 
-# Копируем зависимости
-COPY pyproject.toml poetry.lock* ./
+RUN pip install poetry
 
-# Устанавливаем Poetry
-RUN pip install --no-cache-dir poetry
+COPY pyproject.toml poetry.lock* /app/
 
-# Устанавливаем зависимости
 RUN poetry config virtualenvs.create false \
     && poetry install --no-dev --no-interaction --no-ansi
 
-# Копируем исходный код
 COPY . .
 
-# Создаем пользователя
-RUN useradd -m -u 1000 appuser && chown -R appuser:appuser /app
-USER appuser
+RUN chmod +x /app/entrypoint.sh
 
-# Порт
 EXPOSE 8000
 
-# Команда запуска
-CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+ENTRYPOINT ["/app/entrypoint.sh"]
