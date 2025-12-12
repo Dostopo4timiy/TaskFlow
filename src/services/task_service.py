@@ -1,121 +1,301 @@
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, update, func
-from sqlalchemy.orm import selectinload
-from typing import Optional, List, Tuple
 from datetime import datetime
-import uuid
+from typing import Optional, Tuple
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, update, and_
+from sqlalchemy.sql import func
 
-from models.task import Task, TaskStatus, TaskPriority
-from api.v1.schemas import TaskCreate, TaskUpdate
+from src.models.task import Task as TaskModel, TaskStatus, TaskPriority
+from src.api.v1.schemas import TaskCreate
+import aio_pika
+import json
+from src.core.config import settings
 
 
 class TaskService:
     def __init__(self, db: AsyncSession):
         self.db = db
     
-    async def create_task(self, task_data: TaskCreate) -> Task:
-        """Создание новой задачи"""
-        task = Task(
-            title=task_data.title,
+    async def create_task(self, task_data: TaskCreate) -> TaskModel:
+        """Создание задачи и отправка в очередь"""
+        task = TaskModel(
+            name=task_data.name,
             description=task_data.description,
-            priority=TaskPriority(task_data.priority.value),
+            priority=task_data.priority,
             status=TaskStatus.NEW
         )
+        
         self.db.add(task)
         await self.db.commit()
         await self.db.refresh(task)
+        
+        # Отправка задачи в очередь
+        await self._send_to_queue(task.id, task.priority)
+        
         return task
-    
-    async def get_task(self, task_id: int) -> Optional[Task]:
-        """Получение задачи по ID"""
-        result = await self.db.execute(
-            select(Task).where(Task.id == task_id)
-        )
-        return result.scalar_one_or_none()
     
     async def get_tasks(
         self,
-        skip: int = 0,
-        limit: int = 100,
         status: Optional[TaskStatus] = None,
-        priority: Optional[TaskPriority] = None
-    ) -> Tuple[List[Task], int]:
-        """Получение списка задач с пагинацией и фильтрацией"""
-        query = select(Task)
+        priority: Optional[str] = None,
+        page: int = 1,
+        size: int = 10
+    ) -> Tuple[list[TaskModel], int]:
+        """Получение задач с фильтрацией и пагинацией"""
+        query = select(TaskModel)
         
         if status:
-            query = query.where(Task.status == status)
+            query = query.where(TaskModel.status == status)
         if priority:
-            query = query.where(Task.priority == priority)
+            query = query.where(TaskModel.priority == priority)
         
-        # Получаем общее количество
-        count_query = select(func.count()).select_from(Task)
+        # Подсчет общего количества
+        count_query = select(func.count()).select_from(TaskModel)
         if status:
-            count_query = count_query.where(Task.status == status)
+            count_query = count_query.where(TaskModel.status == status)
         if priority:
-            count_query = count_query.where(Task.priority == priority)
+            count_query = count_query.where(TaskModel.priority == priority)
         
-        total_result = await self.db.execute(count_query)
-        total = total_result.scalar()
+        total = (await self.db.execute(count_query)).scalar()
         
-        # Получаем задачи с пагинацией
-        query = query.offset(skip).limit(limit).order_by(Task.created_at.desc())
+        # Пагинация
+        offset = (page - 1) * size
+        query = query.offset(offset).limit(size).order_by(TaskModel.created_at.desc())
+        
         result = await self.db.execute(query)
         tasks = result.scalars().all()
         
         return tasks, total
     
-    async def update_task(
+    async def get_task(self, task_id: int) -> Optional[TaskModel]:
+        """Получение задачи по ID"""
+        query = select(TaskModel).where(TaskModel.id == task_id)
+        result = await self.db.execute(query)
+        return result.scalar_one_or_none()
+    
+    async def cancel_task(self, task_id: int) -> bool:
+        """Отмена задачи"""
+        query = select(TaskModel).where(
+            and_(
+                TaskModel.id == task_id,
+                TaskModel.status.in_([TaskStatus.NEW, TaskStatus.PENDING])
+            )
+        )
+        result = await self.db.execute(query)
+        task = result.scalar_one_or_none()
+        
+        if task:
+            task.status = TaskStatus.CANCELLED
+            task.completed_at = datetime.utcnow()
+            await self.db.commit()
+            return True
+        
+        return False
+    
+    async def update_task_status(
         self,
         task_id: int,
-        update_data: TaskUpdate
-    ) -> Optional[Task]:
-        """Обновление задачи"""
-        task = await self.get_task(task_id)
-        if not task:
-            return None
+        status: TaskStatus,
+        result: Optional[str] = None,
+        error_info: Optional[str] = None
+    ) -> bool:
+        """Обновление статуса задачи"""
+        update_data = {"status": status}
         
-        update_dict = update_data.dict(exclude_unset=True)
+        if status == TaskStatus.IN_PROGRESS:
+            update_data["started_at"] = datetime.utcnow()
+        elif status in [TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED]:
+            update_data["completed_at"] = datetime.utcnow()
         
-        # Обработка изменения статуса
-        if 'status' in update_dict:
-            new_status = TaskStatus(update_dict['status'])
-            
-            if new_status == TaskStatus.IN_PROGRESS and not task.started_at:
-                update_dict['started_at'] = datetime.utcnow()
-            
-            if new_status in [TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED]:
-                if not task.completed_at:
-                    update_dict['completed_at'] = datetime.utcnow()
+        if result:
+            update_data["result"] = result
+        if error_info:
+            update_data["error_info"] = error_info
         
-        await self.db.execute(
-            update(Task)
-            .where(Task.id == task_id)
-            .values(**update_dict)
+        stmt = (
+            update(TaskModel)
+            .where(TaskModel.id == task_id)
+            .values(**update_data)
         )
+        result = await self.db.execute(stmt)
         await self.db.commit()
         
-        # Получаем обновленную задачу
-        return await self.get_task(task_id)
+        return result.rowcount > 0
     
-    async def cancel_task(self, task_id: int) -> Optional[Task]:
+    async def _send_to_queue(self, task_id: int, priority: TaskPriority):
+        """Отправка задачи в очередь RabbitMQ"""
+        connection = await aio_pika.connect_robust(settings.rabbitmq_url)
+        async with connection:
+            channel = await connection.channel()
+            
+            # Создаем очередь с приоритетами
+            await channel.declare_queue(
+                "task_queue",
+                durable=True,
+                arguments={"x-max-priority": 10}
+            )
+            
+            message_body = json.dumps({"task_id": task_id})
+            priority_map = {
+                TaskPriority.LOW: 1,
+                TaskPriority.MEDIUM: 5,
+                TaskPriority.HIGH: 10
+            }
+            
+            await channel.default_exchange.publish(
+                aio_pika.Message(
+                    body=message_body.encode(),
+                    delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
+                    priority=priority_map[priority]
+                ),
+                routing_key="task_queue"
+            )from datetime import datetime
+from typing import Optional, Tuple
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, update, and_
+from sqlalchemy.sql import func
+
+from src.models.task import Task as TaskModel, TaskStatus, TaskPriority
+from src.api.v1.schemas import TaskCreate
+import aio_pika
+import json
+from src.core.config import settings
+
+
+class TaskService:
+    def __init__(self, db: AsyncSession):
+        self.db = db
+    
+    async def create_task(self, task_data: TaskCreate) -> TaskModel:
+        """Создание задачи и отправка в очередь"""
+        task = TaskModel(
+            name=task_data.name,
+            description=task_data.description,
+            priority=task_data.priority,
+            status=TaskStatus.NEW
+        )
+        
+        self.db.add(task)
+        await self.db.commit()
+        await self.db.refresh(task)
+        
+        # Отправка задачи в очередь
+        await self._send_to_queue(task.id, task.priority)
+        
+        return task
+    
+    async def get_tasks(
+        self,
+        status: Optional[TaskStatus] = None,
+        priority: Optional[str] = None,
+        page: int = 1,
+        size: int = 10
+    ) -> Tuple[list[TaskModel], int]:
+        """Получение задач с фильтрацией и пагинацией"""
+        query = select(TaskModel)
+        
+        if status:
+            query = query.where(TaskModel.status == status)
+        if priority:
+            query = query.where(TaskModel.priority == priority)
+        
+        # Подсчет общего количества
+        count_query = select(func.count()).select_from(TaskModel)
+        if status:
+            count_query = count_query.where(TaskModel.status == status)
+        if priority:
+            count_query = count_query.where(TaskModel.priority == priority)
+        
+        total = (await self.db.execute(count_query)).scalar()
+        
+        # Пагинация
+        offset = (page - 1) * size
+        query = query.offset(offset).limit(size).order_by(TaskModel.created_at.desc())
+        
+        result = await self.db.execute(query)
+        tasks = result.scalars().all()
+        
+        return tasks, total
+    
+    async def get_task(self, task_id: int) -> Optional[TaskModel]:
+        """Получение задачи по ID"""
+        query = select(TaskModel).where(TaskModel.id == task_id)
+        result = await self.db.execute(query)
+        return result.scalar_one_or_none()
+    
+    async def cancel_task(self, task_id: int) -> bool:
         """Отмена задачи"""
-        task = await self.get_task(task_id)
-        if not task or task.status in [TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED]:
-            return None
-        
-        update_data = TaskUpdate(
-            status=TaskStatus.CANCELLED,
-            error_info="Task cancelled by user"
+        query = select(TaskModel).where(
+            and_(
+                TaskModel.id == task_id,
+                TaskModel.status.in_([TaskStatus.NEW, TaskStatus.PENDING])
+            )
         )
-        return await self.update_task(task_id, update_data)
-    
-    async def delete_task(self, task_id: int) -> bool:
-        """Удаление задачи"""
-        task = await self.get_task(task_id)
-        if not task:
-            return False
+        result = await self.db.execute(query)
+        task = result.scalar_one_or_none()
         
-        await self.db.delete(task)
+        if task:
+            task.status = TaskStatus.CANCELLED
+            task.completed_at = datetime.utcnow()
+            await self.db.commit()
+            return True
+        
+        return False
+    
+    async def update_task_status(
+        self,
+        task_id: int,
+        status: TaskStatus,
+        result: Optional[str] = None,
+        error_info: Optional[str] = None
+    ) -> bool:
+        """Обновление статуса задачи"""
+        update_data = {"status": status}
+        
+        if status == TaskStatus.IN_PROGRESS:
+            update_data["started_at"] = datetime.utcnow()
+        elif status in [TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED]:
+            update_data["completed_at"] = datetime.utcnow()
+        
+        if result:
+            update_data["result"] = result
+        if error_info:
+            update_data["error_info"] = error_info
+        
+        stmt = (
+            update(TaskModel)
+            .where(TaskModel.id == task_id)
+            .values(**update_data)
+        )
+        result = await self.db.execute(stmt)
         await self.db.commit()
-        return True
+        
+        return result.rowcount > 0
+    
+    async def _send_to_queue(self, task_id: int, priority: TaskPriority):
+        """Отправка задачи в очередь RabbitMQ"""
+        connection = await aio_pika.connect_robust(settings.rabbitmq_url)
+        async with connection:
+            channel = await connection.channel()
+            
+            # Создаем очередь с приоритетами
+            await channel.declare_queue(
+                "task_queue",
+                durable=True,
+                arguments={"x-max-priority": 10}
+            )
+            
+            message_body = json.dumps({"task_id": task_id})
+            priority_map = {
+                TaskPriority.LOW: 1,
+                TaskPriority.MEDIUM: 5,
+                TaskPriority.HIGH: 10
+            }
+            
+            await channel.default_exchange.publish(
+                aio_pika.Message(
+                    body=message_body.encode(),
+                    delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
+                    priority=priority_map[priority]
+                ),
+                routing_key="task_queue"
+            )
