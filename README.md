@@ -90,7 +90,7 @@ task-service/
 
 1. **Клонируйте репозиторий:**
 ```bash
-git clone <repository-url>
+git clone [<repository-url>](https://github.com/Dostopo4timiy/TaskFlow.git)
 cd task-service
 ```
 
